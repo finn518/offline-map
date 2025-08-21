@@ -40,6 +40,7 @@ import org.maplibre.android.maps.MapLibreMap
 import org.maplibre.android.maps.MapView
 import org.maplibre.android.maps.OnMapReadyCallback
 import org.maplibre.android.maps.Style
+import org.maplibre.android.style.expressions.Expression
 import org.maplibre.android.style.layers.LineLayer
 import org.maplibre.android.style.layers.PropertyFactory
 import org.maplibre.android.style.layers.RasterLayer
@@ -70,6 +71,8 @@ class MainActivity : AppCompatActivity(), OnMapReadyCallback {
     private lateinit var fusedLocationClient: FusedLocationProviderClient
     private var currentLocation: GHPoint = GHPoint(-7.9829, 112.6304)
     private lateinit var locationCallback: LocationCallback
+    private var activeRouteIndex = 0
+    private val allRoutePointsList = mutableListOf<List<LatLng>>()
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -330,30 +333,25 @@ class MainActivity : AppCompatActivity(), OnMapReadyCallback {
                 val allPaths = rsp.all
                 if (allPaths.isEmpty()) return@launch
 
-                val allRoutePoints = mutableListOf<LatLng>()
-
+                allRoutePointsList.clear()
                 withContext(Dispatchers.Main) {
                     // Gambar setiap jalur dengan warna berbeda
                     allPaths.forEachIndexed { index, path ->
-                        Log.d(TAG, "=== Jalur #$index ===")
-                        Log.d(TAG, "Jarak: ${path.distance} meter")
-                        Log.d(TAG, "Waktu: ${path.time / 1000.0 / 60.0} menit")
-
                         val points = path.points
                         val routePoints = mutableListOf<LatLng>()
                         for (i in 0 until points.size()) {
                             val lat = points.getLat(i)
                             val lon = points.getLon(i)
                             routePoints.add(LatLng(lat, lon))
-                            allRoutePoints.add(LatLng(lat, lon))
                         }
-
+                        allRoutePointsList.add(routePoints)
                         drawRoute(routePoints, index)
                     }
 
                     // Zoom kamera ke semua jalur
-                    if (allRoutePoints.isNotEmpty()) {
-                        val bounds = LatLngBounds.Builder().includes(allRoutePoints).build()
+                    val allPointsFlat = allRoutePointsList.flatten()
+                    if (allPointsFlat.isNotEmpty()) {
+                        val bounds = LatLngBounds.Builder().includes(allPointsFlat).build()
                         mapLibreMap?.animateCamera(CameraUpdateFactory.newLatLngBounds(bounds, 100))
                     }
 
@@ -366,6 +364,9 @@ class MainActivity : AppCompatActivity(), OnMapReadyCallback {
                         "Jarak jalur terbaik: %.1f km, Waktu: %.1f menit".format(distanceKm, timeMin),
                         Toast.LENGTH_LONG
                     ).show()
+
+                    // Setup listener tap interaktif
+                    setupRouteClickListener(allRoutePointsList)
                 }
 
             } catch (e: Exception) {
@@ -377,7 +378,7 @@ class MainActivity : AppCompatActivity(), OnMapReadyCallback {
         }
     }
 
-
+    //Menampilkan jalur, jika active maka berwarna biru jika tidak maka berwarna abu abu
     private fun drawRoute(routePoints: List<LatLng>, index: Int) {
         val lineString = LineString.fromLngLats(
             routePoints.map { Point.fromLngLat(it.longitude, it.latitude) }
@@ -387,7 +388,6 @@ class MainActivity : AppCompatActivity(), OnMapReadyCallback {
         val layerId = "route-layer-$index"
 
         mapLibreMap?.getStyle { style ->
-            // Tambahkan / update GeoJsonSource
             val geoJsonSource = GeoJsonSource(sourceId, FeatureCollection.fromFeatures(arrayOf(Feature.fromGeometry(lineString))))
             if (style.getSource(sourceId) == null) {
                 style.addSource(geoJsonSource)
@@ -395,24 +395,81 @@ class MainActivity : AppCompatActivity(), OnMapReadyCallback {
                 (style.getSource(sourceId) as GeoJsonSource).setGeoJson(lineString)
             }
 
-            // Tambahkan layer jika belum ada
             if (style.getLayer(layerId) == null) {
                 val lineLayer = LineLayer(layerId, sourceId).apply {
                     setProperties(
-                        PropertyFactory.lineColor(
-                            when(index) {
-                                0 -> Color.BLUE
-                                1 -> Color.GREEN
-                                else -> Color.RED
-                            }
-                        ),
-                        PropertyFactory.lineWidth(5f)
+                        PropertyFactory.lineColor(if (index == activeRouteIndex) Color.BLUE else Color.LTGRAY),
+                        PropertyFactory.lineWidth(6f)
                     )
                 }
                 style.addLayer(lineLayer)
+            } else {
+                (style.getLayer(layerId) as LineLayer).setProperties(
+                    PropertyFactory.lineColor(if (index == activeRouteIndex) Color.BLUE else Color.LTGRAY)
+                )
             }
         }
     }
+
+    //ketika ditekan akan merubah nilai activeroute
+    private fun setupRouteClickListener(allRoutePointsList: List<List<LatLng>>) {
+        mapLibreMap?.addOnMapClickListener { tapPoint ->
+            var closestIndex = -1
+            var minDistance = Float.MAX_VALUE
+
+            allRoutePointsList.forEachIndexed { index, routePoints ->
+                for (i in 0 until routePoints.size - 1) {
+                    val start = routePoints[i]
+                    val end = routePoints[i + 1]
+                    val distance = distanceToSegment(tapPoint.latitude, tapPoint.longitude, start, end)
+                    if (distance < minDistance) {
+                        minDistance = distance
+                        closestIndex = index
+                    }
+                }
+            }
+
+            if (minDistance < 0.0005) { // threshold ~50m
+                activeRouteIndex = closestIndex
+                mapLibreMap?.getStyle { style ->
+                    allRoutePointsList.forEachIndexed { index, _ ->
+                        val layer = style.getLayer("route-layer-$index") as? LineLayer ?: return@forEachIndexed
+                        layer.setProperties(
+                            PropertyFactory.lineColor(if (index == activeRouteIndex) Color.BLUE else Color.LTGRAY)
+                        )
+                    }
+                }
+            }
+            true
+        }
+    }
+
+    //Menghitung jarak tap dan jalur yang terdekat
+    private fun distanceToSegment(lat: Double, lon: Double, start: LatLng, end: LatLng): Float {
+        val x0 = lon; val y0 = lat
+        val x1 = start.longitude; val y1 = start.latitude
+        val x2 = end.longitude; val y2 = end.latitude
+
+        val dx = x2 - x1
+        val dy = y2 - y1
+        if (dx == 0.0 && dy == 0.0) return distance(lat, lon, start.latitude, start.longitude)
+
+        val t = ((x0 - x1) * dx + (y0 - y1) * dy) / (dx*dx + dy*dy)
+        return when {
+            t < 0 -> distance(lat, lon, y1, x1)
+            t > 1 -> distance(lat, lon, y2, x2)
+            else -> distance(lat, lon, y1 + t*dy, x1 + t*dx)
+        }
+    }
+
+
+    private fun distance(lat1: Double, lon1: Double, lat2: Double, lon2: Double): Float {
+        val dLat = lat1 - lat2
+        val dLon = lon1 - lon2
+        return Math.sqrt(dLat*dLat + dLon*dLon).toFloat()
+    }
+
+
 
 
     override fun onStart() { super.onStart(); mapView.onStart() }
