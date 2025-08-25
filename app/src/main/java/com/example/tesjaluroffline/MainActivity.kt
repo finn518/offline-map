@@ -6,6 +6,8 @@ import android.content.ContentValues.TAG
 import android.content.pm.PackageManager
 import android.graphics.Color
 import android.os.Bundle
+import android.os.Handler
+import android.os.Looper
 import android.util.Log
 import android.widget.ArrayAdapter
 import android.widget.Button
@@ -62,6 +64,7 @@ class MainActivity : AppCompatActivity(), OnMapReadyCallback {
     //Seacrh
     private var searchBar: MaterialAutoCompleteTextView? = null
     private var btnSeacrh: Button? = null
+    private lateinit var locations: List<LocationItem>
     //GraphHopper
     private var hopper: GraphHopper? = null
 
@@ -95,7 +98,10 @@ class MainActivity : AppCompatActivity(), OnMapReadyCallback {
             startLocationUpdates()
         }
 
+        locations = loadLocationsFromGeoJson(this, "Jawa.geojson")
         val locationNames = locations.map { it.name }
+
+
         setContentView(R.layout.activity_main)
         mapView = findViewById(R.id.mapview)
         searchBar = findViewById(R.id.etSearchBar)
@@ -103,6 +109,7 @@ class MainActivity : AppCompatActivity(), OnMapReadyCallback {
 
         val adapter = ArrayAdapter(this, android.R.layout.simple_list_item_1, locationNames)
         searchBar?.setAdapter(adapter)
+
         mapView.onCreate(savedInstanceState)
         mapView.getMapAsync(this)
 
@@ -120,7 +127,7 @@ class MainActivity : AppCompatActivity(), OnMapReadyCallback {
             val selected = locations.find { it.name == name }
             if (selected != null) {
                 val end = GHPoint(selected.lat, selected.lng)
-                getRoute(hopper!!, end, start)
+                getRoute(hopper!!, start, end)
                 searchBar?.setText("")
             } else {
                 Toast.makeText(this, "Lokasi tidak ditemukan", Toast.LENGTH_SHORT).show()
@@ -352,8 +359,19 @@ class MainActivity : AppCompatActivity(), OnMapReadyCallback {
                     val allPointsFlat = allRoutePointsList.flatten()
                     if (allPointsFlat.isNotEmpty()) {
                         val bounds = LatLngBounds.Builder().includes(allPointsFlat).build()
-                        mapLibreMap?.animateCamera(CameraUpdateFactory.newLatLngBounds(bounds, 100))
+                        mapLibreMap?.animateCamera(CameraUpdateFactory.newLatLngBounds(bounds, 100), 2000)
+                        Handler(Looper.getMainLooper()).postDelayed({
+                            mapLibreMap?.animateCamera(
+                                CameraUpdateFactory.newLatLngZoom(
+                                    LatLng(end.lat, end.lon),
+                                    15.0
+                                ),
+                                1500
+                            )
+                        }, 1000)
                     }
+
+
 
                     // Info jalur terbaik
                     val best = rsp.best
